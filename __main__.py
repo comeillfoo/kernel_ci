@@ -125,7 +125,7 @@ def vm_start(vm_name: str = 'debian10', libvirt_connection_uri: str = 'qemu:///s
 @check_vm_absence
 @check_prerequisites(*vm_prerequisites)
 def vm_shutdown(vm_name: str = 'debian10', libvirt_connection_uri: str = 'qemu:///system'):
-    sh.virsh('--connect', libvirt_connection_uri, 'destroy', vm_name, _out=stderr)
+    sh.virsh('--connect', libvirt_connection_uri, 'shutdown', vm_name, _out=stderr)
 
 
 @check_vm_absence
@@ -150,13 +150,13 @@ def vm_ip(vm_name: str = 'debian10', hostname: str = 'debian', libvirt_connectio
 
 
 def progress(filename, size, sent):
-    stderr.write("%s's progress: %.2f%%   \r" % (filename, float(sent)/float(size)*100) )
+    stderr.write("%s's progress: %.2f%%   \r" % (filename.decode('ascii'), float(sent)/float(size)*100) )
 
 
 @check_vm_absence
 @check_prerequisites(*vm_prerequisites)
 def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
-        hostname: str = 'debian', password: str = 'debian',
+        hostname: str = 'debian', username: str = 'root', password: str = 'debian',
         libvirt_connection_uri: str = 'qemu:///system', network: str = 'default'):
     version = kernel_version(kernel_root)
 
@@ -168,11 +168,11 @@ def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
     header = list(filter(lambda f: f.endswith('.deb') and f.startswith(f'linux-headers-{version}'), files))
     if not any(header):
         raise FileNotFoundError('no kernel headers')
-    header = os.path.join(debpkgs_root, header[0])
+    header = header[0]
     image = list(filter(lambda f: f.endswith('.deb') and f.startswith(f'linux-image-{version}_'), files))
     if not any(image):
         raise FileNotFoundError('no installation kernel image')
-    image = os.path.join(debpkgs_root, image[0])
+    image = image[0]
 
     print(f'Found images {image} and {header}')
 
@@ -184,20 +184,28 @@ def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
     print(f'Obtained VM IP {ip}')
 
     # 2. upload deb packages to vm
-    ssh_client = paramiko.SSHClient()
-    ssh_client.load_system_host_keys()
-    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    ssh_client.connect(hostname=ip, username=hostname, password=password)
-    with SCPClient(ssh_client.get_transport(), progress=progress) as scp_client:
-        root_path = '/root' if hostname == 'root' else f'/home/{hostname}'
-        scp_client.put(image, os.path.join(root_path, image))
-        scp_client.put(header, os.path.join(root_path, header))
-    print('Uploaded kernel installation images')
-    ssh_client.close()
+    with paramiko.SSHClient() as ssh_client:
+        ssh_client.load_system_host_keys()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy)
+        ssh_client.connect(hostname=ip, username=username, password=password)
+        with SCPClient(ssh_client.get_transport(), progress=progress) as scp_client:
+            root_path = '/root' if username == 'root' else f'/home/{username}'
+            scp_client.put(os.path.join(debpkgs_root, image), os.path.join(root_path, image))
+            scp_client.put(os.path.join(debpkgs_root, header), os.path.join(root_path, header))
+        time.sleep(30) # waiting for flush
+        print('\nUploaded kernel installation images')
 
     # 3. install deb packages inside vm
+        sshin, sshout, ssherr = ssh_client.exec_command(f'dpkg -i {header} {image}')
+        print(sshout.read().decode())
+        print(ssherr.read().decode() or '')
     # 4. reboot vm
+        sshin, sshout, ssherr = ssh_client.exec_command(f'reboot')
+        print(sshout.read().decode())
+        print(ssherr.read().decode() or '')
+    time.sleep(90) # waiting for reboot
     # 5. collect logs
+    # todo: 5 stage
     vm_shutdown(vm_name, libvirt_connection_uri)
 
 
