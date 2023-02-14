@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
+import os, sh, libvirt, paramiko, time
+from scp import SCPClient
 from git import Repo
-import os
 from sys import stderr
-import sh
 from enum import Enum
 from io import StringIO
 from itertools import islice
@@ -71,7 +71,7 @@ def kernel_make(kernel_root: str, config: KernelConfigs, extra_config_path: str)
         sh.make('-C', kernel_root, '-j', '8', _out=stderr)
 
 
-vm_prerequisites = [ 'qemu-system-x86', 'libvirt-clients', 'bridge-utils', 'libvirt-daemon-system', 'virtinst' ]
+vm_prerequisites = [ 'qemu-system-x86', 'libvirt-clients', 'bridge-utils', 'libvirt-daemon-system', 'virtinst', 'libvirt-dev' ]
 
 
 @check_prerequisites(*vm_prerequisites)
@@ -141,7 +141,23 @@ def vm_destroy(vm_name: str = 'debian10', libvirt_connection_uri: str = 'qemu://
 
 @check_vm_absence
 @check_prerequisites(*vm_prerequisites)
-def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', libvirt_connection_uri: str = 'qemu:///system'):
+def vm_ip(vm_name: str = 'debian10', hostname: str = 'debian', libvirt_connection_uri: str = 'qemu:///system', network: str = 'default') -> str:
+    connection = libvirt.open(libvirt_connection_uri)
+    vm_lease = list(filter(lambda lease: lease['hostname'] == hostname, connection.networkLookupByName(network).DHCPLeases()))
+    if not any(vm_lease):
+        raise Exception(f'can\'t obtain VM ip; please be sure that network {network} started and VM {vm_name} launched')
+    return vm_lease[0]['ipaddr']
+
+
+def progress(filename, size, sent):
+    stderr.write("%s's progress: %.2f%%   \r" % (filename, float(sent)/float(size)*100) )
+
+
+@check_vm_absence
+@check_prerequisites(*vm_prerequisites)
+def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
+        hostname: str = 'debian', password: str = 'debian',
+        libvirt_connection_uri: str = 'qemu:///system', network: str = 'default'):
     version = kernel_version(kernel_root)
 
     # obtain kernel installation packages
@@ -152,18 +168,36 @@ def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', libv
     header = list(filter(lambda f: f.endswith('.deb') and f.startswith(f'linux-headers-{version}'), files))
     if not any(header):
         raise FileNotFoundError('no kernel headers')
-    header = header[0]
+    header = os.path.join(debpkgs_root, header[0])
     image = list(filter(lambda f: f.endswith('.deb') and f.startswith(f'linux-image-{version}_'), files))
     if not any(image):
         raise FileNotFoundError('no installation kernel image')
-    image = image[0]
+    image = os.path.join(debpkgs_root, image[0])
+
+    print(f'Found images {image} and {header}')
 
     vm_start(vm_name, libvirt_connection_uri)
 
-    # 1. upload deb packages to vm
-    # 2. install deb packages inside vm
-    # 3. reboot vm
-    # 4. collect logs
+    # 1. obtain vm ip address
+    time.sleep(90) # waiting for the boot
+    ip = vm_ip(vm_name, hostname, libvirt_connection_uri, network)
+    print(f'Obtained VM IP {ip}')
+
+    # 2. upload deb packages to vm
+    ssh_client = paramiko.SSHClient()
+    ssh_client.load_system_host_keys()
+    ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh_client.connect(hostname=ip, username=hostname, password=password)
+    with SCPClient(ssh_client.get_transport(), progress=progress) as scp_client:
+        root_path = '/root' if hostname == 'root' else f'/home/{hostname}'
+        scp_client.put(image, os.path.join(root_path, image))
+        scp_client.put(header, os.path.join(root_path, header))
+    print('Uploaded kernel installation images')
+    ssh_client.close()
+
+    # 3. install deb packages inside vm
+    # 4. reboot vm
+    # 5. collect logs
     vm_shutdown(vm_name, libvirt_connection_uri)
 
 
@@ -193,8 +227,8 @@ def main():
     vm_test(kernel_root, '.')
 
     # 7. destroy virtual machine
-    if vm_exists():
-        vm_destroy()
+    # if vm_exists():
+    #     vm_destroy()
 
 
 if __name__ == '__main__':
