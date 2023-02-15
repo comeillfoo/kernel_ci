@@ -63,7 +63,7 @@ def kernel_version(kernel_root: str) -> str:
 def kernel_make(kernel_root: str, config: KernelConfigs, extra_config_path: str):
     sh.make('-C', kernel_root, 'clean', _out=stderr)
     if config == KernelConfigs.DEBCONFIG:
-        sh.cp(extra_config_path, os.path.join(kernel_root, '.config'))
+        # sh.cp(extra_config_path, os.path.join(kernel_root, '.config'))
         sh.make('-C', kernel_root, 'olddefconfig', _out=stderr)
         sh.make('-C', kernel_root, '-j', '8', 'bindeb-pkg', _out=stderr)
     else:
@@ -149,10 +149,6 @@ def vm_ip(vm_name: str = 'debian10', hostname: str = 'debian', libvirt_connectio
     return vm_lease[0]['ipaddr']
 
 
-def progress(filename, size, sent):
-    stderr.write("%s's progress: %.2f%%   \r" % (filename.decode('ascii'), float(sent)/float(size)*100) )
-
-
 @check_vm_absence
 @check_prerequisites(*vm_prerequisites)
 def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
@@ -188,24 +184,40 @@ def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
         ssh_client.load_system_host_keys()
         ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy)
         ssh_client.connect(hostname=ip, username=username, password=password)
+        def progress(filename, size, sent):
+            stderr.write("%s's progress: %.2f%%   \r" % (filename.decode('ascii'), float(sent)/float(size)*100))
         with SCPClient(ssh_client.get_transport(), progress=progress) as scp_client:
             root_path = '/root' if username == 'root' else f'/home/{username}'
             scp_client.put(os.path.join(debpkgs_root, image), os.path.join(root_path, image))
+            print()
             scp_client.put(os.path.join(debpkgs_root, header), os.path.join(root_path, header))
         time.sleep(30) # waiting for flush
         print('\nUploaded kernel installation images')
 
     # 3. install deb packages inside vm
-        sshin, sshout, ssherr = ssh_client.exec_command(f'dpkg -i {header} {image}')
+        _, sshout, ssherr = ssh_client.exec_command(f'dpkg -i {header} {image}')
         print(sshout.read().decode())
         print(ssherr.read().decode() or '')
     # 4. reboot vm
-        sshin, sshout, ssherr = ssh_client.exec_command(f'reboot')
+        _, sshout, ssherr = ssh_client.exec_command(f'reboot')
         print(sshout.read().decode())
         print(ssherr.read().decode() or '')
     time.sleep(90) # waiting for reboot
+
     # 5. collect logs
-    # todo: 5 stage
+    with paramiko.SSHClient() as ssh_client:
+        ssh_client.load_system_host_keys()
+        ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy)
+        ssh_client.connect(hostname=ip, username=username, password=password)
+        _, sshout, ssherr = ssh_client.exec_command('dmesg -HTl emerg,alert,crit,err')
+        errors = sshout.read().decode()
+        print(errors)
+        print(ssherr.read().decode() or '')
+
+    if errors:
+        boot_errors = len(errors.split("\n"))
+        print(f'WARN: there are {boot_errors} boot errors', file=stderr)
+        return
     vm_shutdown(vm_name, libvirt_connection_uri)
 
 
