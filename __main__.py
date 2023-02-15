@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, sh, libvirt, paramiko, time
+import os, sh, libvirt, paramiko, time, click
 from scp import SCPClient
 from git import Repo
 from sys import stderr
@@ -23,12 +23,21 @@ def check_prerequisites(*prerequisites):
     return decorator
 
 
+@click.command('clone')
+@click.option('-u', '--url', help='an url to the git repository with a kernel')
+@click.option('-v', '--version', help='version of the cloning kernel')
+@click.option('-d', '--dir', default='.', \
+              help='path to the directory where the kernel cloned, default current directory')
 @check_prerequisites('git')
 def kernel_clone(url: str, version: str, directory: str = '.') -> Repo:
     tag = 'v' + version
     return Repo.clone_from(url, os.path.join(directory, f'linux-kernel-{tag}'), branch=tag)
 
 
+@click.command('patch')
+@click.option('-k', '--kernel', help='a path to the kernel')
+@click.option('--patches', help='path to the patches root')
+@click.option('--reverse/--no-reverse', default=False, help='undo patches or apply')
 def kernel_patch(kernel_root: str, patches_root: str, reverse: bool=False):
     args = [ '-d', kernel_root, '-p1', '-F0' ]
     if reverse:
@@ -53,17 +62,24 @@ def kernel_patch(kernel_root: str, patches_root: str, reverse: bool=False):
                 sh.patch(*args, _in=patch.read(), _out=stderr)
 
 
+@click.command('version')
+@click.option('-k', '--kernel', help='a path to the kernel')
 def kernel_version(kernel_root: str) -> str:
     with open(os.path.join(kernel_root, 'Makefile')) as kernel:
         head = list(islice(kernel, 4))[1:]
     return '.'.join(map(lambda line: line.split(' = ')[1].strip(), head))
 
 
+@click.command('make')
+@click.option('-k', '--kernel', help='a path to the kernel')
+@click.option('-c', '--config', type=click.Choice([KernelConfigs.DEFCONFIG, KernelConfigs.DEBCONFIG]), \
+              default=KernelConfigs.DEFCONFIG, help='choose the type of config to use')
+@click.option('--config-path', help='a path to the config for deb-package build')
 @check_prerequisites('git', 'gcc', 'make', 'flex', 'bison', 'fakeroot', 'bc', 'dpkg-dev', 'rsync', 'libelf-dev', 'libssl-dev')
 def kernel_make(kernel_root: str, config: KernelConfigs, extra_config_path: str):
     sh.make('-C', kernel_root, 'clean', _out=stderr)
     if config == KernelConfigs.DEBCONFIG:
-        # sh.cp(extra_config_path, os.path.join(kernel_root, '.config'))
+        sh.cp(extra_config_path, os.path.join(kernel_root, '.config'))
         sh.make('-C', kernel_root, 'olddefconfig', _out=stderr)
         sh.make('-C', kernel_root, '-j', '8', 'bindeb-pkg', _out=stderr)
     else:
@@ -81,6 +97,7 @@ def vm_exists(vm_name: str = 'debian10', libvirt_connection_uri: str = 'qemu:///
     return vmlist.getvalue().split('\n').count(vm_name) == 1
 
 
+@click.command()
 @check_prerequisites(*vm_prerequisites)
 def vm_create(img_path: str, \
         libvirt_connection_uri: str = 'qemu:///system', \
@@ -128,6 +145,7 @@ def vm_shutdown(vm_name: str = 'debian10', libvirt_connection_uri: str = 'qemu:/
     sh.virsh('--connect', libvirt_connection_uri, 'shutdown', vm_name, _out=stderr)
 
 
+# @click.command()
 @check_vm_absence
 @check_prerequisites(*vm_prerequisites)
 def vm_destroy(vm_name: str = 'debian10', libvirt_connection_uri: str = 'qemu:///system'):
@@ -149,6 +167,7 @@ def vm_ip(vm_name: str = 'debian10', hostname: str = 'debian', libvirt_connectio
     return vm_lease[0]['ipaddr']
 
 
+# @click.command()
 @check_vm_absence
 @check_prerequisites(*vm_prerequisites)
 def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
@@ -221,11 +240,23 @@ def vm_test(kernel_root: str, debpkgs_root: str, vm_name: str = 'debian10', \
     vm_shutdown(vm_name, libvirt_connection_uri)
 
 
+@click.group()
+def cli():
+    pass
+
+
+cli.add_command(kernel_clone)
+cli.add_command(kernel_patch)
+cli.add_command(kernel_version)
+cli.add_command(kernel_make)
+
+
 def main():
+    cli()
     # 1. Obtaining kernel from kernel.org (git)
     # kernel_repo = kernel_clone('https://git.kernel.org/pub/scm/linux/kernel/git/torvalds/linux.git', '5.10')
-    kernel_repo = Repo('./linux-kernel-v5.10')
-    kernel_root = kernel_repo.working_tree_dir
+    # kernel_repo = Repo('./linux-kernel-v5.10')
+    # kernel_root = kernel_repo.working_tree_dir
 
     # obtain kernel version
     # print(kernel_version(kernel_root))
@@ -240,11 +271,11 @@ def main():
     # kernel_make(kernel_root, KernelConfigs.DEBCONFIG, '.tmp/config')
 
     # 5. create virtual machine using QEMU (virt-install)
-    if not vm_exists():
-        vm_create('./debian10.qcow2')
+    # if not vm_exists():
+    #     vm_create('./debian10.qcow2')
 
-    # 6. test kernel in QEMU
-    vm_test(kernel_root, '.')
+    # # 6. test kernel in QEMU
+    # vm_test(kernel_root, '.')
 
     # 7. destroy virtual machine
     # if vm_exists():
