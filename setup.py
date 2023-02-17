@@ -15,10 +15,11 @@ with pathlib.Path('requirements.txt').open() as requirements_txt:
 try:
     VERSION = subprocess.check_output(['git', 'describe', '--tags']).strip()
 except subprocess.CalledProcessError:
-    VERSION = '0'
+    VERSION = '0.0.0'
 
 
 setup(name='kernel_ci',
+      version=VERSION,
       description='tool for linux kernel tweaking',
       author='Lenar Khannanov',
       url='https://github.com/comeillfoo/kernel_ci',
