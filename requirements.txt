@@ -1,0 +1,6 @@
+click
+GitPython
+libvirt-python
+paramiko
+scp
+sh
