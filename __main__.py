@@ -34,11 +34,7 @@ def kernel_clone(url: str, version: str, dir: str = '.') -> Repo:
     return Repo.clone_from(url, os.path.join(dir, f'linux-kernel-{tag}'), branch=tag)
 
 
-@click.command('patch')
-@click.option('-k', '--kernel', help='a path to the kernel', required=True)
-@click.option('--patches', help='path to the patches root', required=True)
-@click.option('--reverse', is_flag=True, default=False, help='undo patches or apply')
-def kernel_patch(kernel: str, patches: str, reverse: bool=False):
+def _kernel_patch(kernel: str, patches: str, reverse: bool=False):
     args = [ '-d', kernel, '-p1', '-F0' ]
     if reverse:
         args.append('-R')
@@ -54,12 +50,20 @@ def kernel_patch(kernel: str, patches: str, reverse: bool=False):
     for target in targets:
         patch_or_dir = os.path.join(patches, target.strip())
         if os.path.isdir(patch_or_dir):
-            kernel_patch(kernel, patch_or_dir, reverse)
+            _kernel_patch(kernel, patch_or_dir, reverse)
         else:
             if not patch_or_dir.endswith('.patch'):
                 patch_or_dir += '.patch'
             with open(patch_or_dir) as patch:
                 sh.patch(*args, _in=patch.read(), _out=stderr)
+
+
+@click.command('patch')
+@click.option('-k', '--kernel', help='a path to the kernel', required=True)
+@click.option('--patches', help='path to the patches root', required=True)
+@click.option('--reverse', is_flag=True, default=False, help='undo patches or apply')
+def kernel_patch(kernel: str, patches: str, reverse: bool=False):
+    _kernel_patch(kernel, patches, reverse)
 
 
 def _kernel_version(kernel: str) -> str:
